@@ -87,7 +87,7 @@ async function startWork(
   const worktreesDir = resolve(repoRoot, "..", "pi-worktrees");
   const worktreePath = resolve(worktreesDir, name);
 
-  // 5. Create the worktree
+  // 5. Create the worktree (starts in detached HEAD at origin/<defaultBranch>)
   onUpdate?.({ content: [{ type: "text", text: `Creating worktree at ${worktreePath} from ${defaultBranch}...` }] });
   const { stderr: addErr, code: addCode } = await git(
     ["worktree", "add", worktreePath, `origin/${defaultBranch}`],
@@ -102,10 +102,34 @@ async function startWork(
     throw new Error(`git worktree add failed: ${addErr || "unknown error"}`);
   }
 
+  // 6. Create a named branch in the worktree (escape detached HEAD)
+  //    This ensures create_mr and other tools that need a branch name work correctly.
+  onUpdate?.({ content: [{ type: "text", text: `Creating branch "${name}" in worktree...` }] });
+  const { stderr: branchErr, code: branchCode } = await git(["checkout", "-b", name], worktreePath);
+  if (branchCode !== 0) {
+    throw new Error(`Failed to create branch "${name}" in worktree: ${branchErr || "unknown error"}`);
+  }
+
+  // 7. Push to origin to establish upstream tracking (no new commits —
+  //    just sets the remote ref so the branch is tracked from the start).
+  onUpdate?.({ content: [{ type: "text", text: `Pushing branch "${name}" to origin (establish tracking)...` }] });
+  const { code: pushCode, stderr: pushErr } = await git(["push", "--set-upstream", "origin", name], worktreePath);
+  if (pushCode !== 0) {
+    // Non-fatal — agent's first real push will set tracking
+    onUpdate?.({
+      content: [
+        {
+          type: "text",
+          text: `Note: push to origin skipped (${pushErr || "no new commits"}). Tracking will be set on first real push.`,
+        },
+      ],
+    });
+  }
+
   return {
     name,
     path: worktreePath,
-    branch: defaultBranch,
+    branch: name,
     defaultBranch,
   };
 }

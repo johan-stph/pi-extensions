@@ -33,14 +33,29 @@ function gh(args: string[], cwd: string): Promise<{ stdout: string; stderr: stri
   });
 }
 
-function gitBranchName(cwd: string): Promise<string | null> {
+function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const child = spawn("git", ["branch", "--show-current"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
+    let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.on("error", () => resolve(null));
-    child.on("close", (code) => resolve(code === 0 ? stdout.trim() : null));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.on("error", () => resolve({ stdout: "", stderr: "git not found", code: 1 }));
+    child.on("close", (code: number | null) =>
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 }),
+    );
   });
+}
+
+async function gitBranchName(cwd: string): Promise<string | null> {
+  const { stdout, code } = await git(["branch", "--show-current"], cwd);
+  return code === 0 && stdout ? stdout : null;
+}
+
+/** Check if we're in a detached HEAD state. Returns true if HEAD is detached. */
+async function isDetachedHead(cwd: string): Promise<boolean> {
+  const { stdout, code } = await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  return code === 0 && stdout === "HEAD";
 }
 
 async function preflight(cwd: string): Promise<string | null> {
@@ -71,18 +86,23 @@ interface MrInfo {
 async function createMr(cwd: string, description: string, base?: string, draft?: boolean): Promise<MrInfo> {
   const args = ["pr", "create"];
 
-  // Determine current branch (works correctly in worktrees too)
-  const { stdout: headBranch } = await gh(["pr", "view", "--json", "headRefName", "--jq", ".headRefName"], cwd);
-  const head = headBranch || (await gitBranchName(cwd));
-  if (!head) throw new Error("Could not determine current branch");
+  // Determine current branch
+  const head = await gitBranchName(cwd);
+  if (!head) {
+    if (await isDetachedHead(cwd)) {
+      throw new Error(
+        "Detached HEAD — no branch to create MR from. Create a branch first: git checkout -b <branch-name>",
+      );
+    }
+    throw new Error("Could not determine current branch");
+  }
 
   args.push("--head", head);
 
-  // Ensure branch is pushed so gh pr create can find it (ok if already exists)
-  try {
-    await gh(["push", "--set-upstream", "origin", head], cwd);
-  } catch {
-    /* branch may already exist */
+  // Ensure branch is pushed so gh pr create can find it
+  const { code: pushCode, stderr: pushErr } = await gh(["push", "--set-upstream", "origin", head], cwd);
+  if (pushCode !== 0) {
+    throw new Error(`Failed to push branch "${head}" to origin: ${pushErr || "unknown error"}`);
   }
 
   const nl = description.indexOf("\n");
