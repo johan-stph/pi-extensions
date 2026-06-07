@@ -33,6 +33,16 @@ function gh(args: string[], cwd: string): Promise<{ stdout: string; stderr: stri
   });
 }
 
+function gitBranchName(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["branch", "--show-current"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code === 0 ? stdout.trim() : null));
+  });
+}
+
 async function preflight(cwd: string): Promise<string | null> {
   const { code } = await gh(["--version"], cwd);
   if (code !== 0) return "GitHub CLI (`gh`) not found. Install from https://cli.github.com/";
@@ -60,6 +70,20 @@ interface MrInfo {
  */
 async function createMr(cwd: string, description: string, base?: string, draft?: boolean): Promise<MrInfo> {
   const args = ["pr", "create"];
+
+  // Determine current branch (works correctly in worktrees too)
+  const { stdout: headBranch } = await gh(["pr", "view", "--json", "headRefName", "--jq", ".headRefName"], cwd);
+  const head = headBranch || (await gitBranchName(cwd));
+  if (!head) throw new Error("Could not determine current branch");
+
+  args.push("--head", head);
+
+  // Ensure branch is pushed so gh pr create can find it (ok if already exists)
+  try {
+    await gh(["push", "--set-upstream", "origin", head], cwd);
+  } catch {
+    /* branch may already exist */
+  }
 
   const nl = description.indexOf("\n");
   const title = (nl === -1 ? description : description.slice(0, nl)).slice(0, 256);
