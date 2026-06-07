@@ -4,6 +4,21 @@ Personal pi coding agent extensions.
 
 ## Extensions
 
+### start-work
+
+Creates an isolated git worktree from the latest main branch so agent work doesn't interfere with the user's working copy. Encouraged as the first tool call before any file writes.
+
+**Tool:** `start_work` — callable by the LLM.
+
+**Usage:**
+
+```
+/start-work add-auth
+/start-work fix-bug-42
+```
+
+Worktrees are created at `<repo-root>/../pi-worktrees/<name>`. The LLM is instructed to use the returned path for all subsequent file operations.
+
 ### create-mr
 
 Creates a GitHub MR for the current branch and polls CI checks in the background.

@@ -5,7 +5,8 @@
   "private": true,
   "pi": {
     "extensions": [
-      "./create-mr/index.ts"
+      "./create-mr/index.ts",
+      "./start-work/index.ts"
     ]
   }
 }
