@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  check:
+    name: Format, Lint & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Prettier (format check)
+        run: npx prettier --check "**/*.ts"
+
+      - name: ESLint
+        run: npx eslint "**/*.ts"
+
+      - name: TypeScript (type check)
+        run: npx tsc --noEmit
