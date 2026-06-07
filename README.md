@@ -40,6 +40,22 @@ Or let the agent call the `create_mr` tool directly — it also provides `check_
 
 **Requirements:** `gh` CLI installed and authenticated (`gh auth login`).
 
+### new-work-check
+
+Assesses workspace readiness before starting new work. Called by the LLM at the start of every new user request before `start_work`.
+
+**Tool:** `check_workspace` — callable by the LLM.
+
+**What it does:**
+
+1. Checks for uncommitted changes
+2. Detects current branch (main vs feature)
+3. Queries GitHub for MR status (merged / open / none)
+4. **Happy path** (clean + no blockers): auto-switches to main, pulls latest, confirms readiness → LLM proceeds to `start_work`
+5. **Blocked path** (uncommitted changes, open MR, etc.): returns blockers → LLM presents them to the user
+
+**Requirements:** `gh` CLI for MR status checks (gracefully degrades without it).
+
 ## Adding new extensions
 
 1. Create a subdirectory: `my-tool/index.ts`
