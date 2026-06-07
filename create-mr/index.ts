@@ -361,11 +361,16 @@ export default function (pi: ExtensionAPI) {
       try {
         const mr = await createMr(ctx.cwd, params.description, params.base, params.draft);
 
+        // Quick poll: wait up to 10s for the first CI check to appear
         let initialChecks: CiCheck[] = [];
-        try {
-          initialChecks = await fetchChecks(mr.number, ctx.cwd);
-        } catch {
-          /* ok */
+        for (let i = 0; i < 4; i++) {
+          try {
+            initialChecks = await fetchChecks(mr.number, ctx.cwd);
+            if (initialChecks.length > 0) break;
+          } catch {
+            /* ok */
+          }
+          if (i < 3) await sleep(2_500);
         }
 
         startCiPolling(pi, mr, ctx.cwd);
@@ -392,11 +397,92 @@ export default function (pi: ExtensionAPI) {
 
   // ── check_ci tool ───────────────────────────────────────────────────────
 
+  /**
+   * Poll CI checks with two phases:
+   *  1. Wait up to WAIT_APPEAR_MS for at least one check to appear.
+   *  2. Then wait up to WAIT_COMPLETE_MS for all checks to finish.
+   * Reports verdict when complete, or current snapshot on timeout.
+   */
+  async function pollCiForResult(
+    mrNumber: number,
+    cwd: string,
+    signal: AbortSignal,
+    onUpdate?: (update: { content: { type: "text"; text: string }[] }) => void,
+  ): Promise<{ report: CiReport; timedOut: boolean }> {
+    const INTERVAL_APPEAR = 3_000;
+    const MAX_APPEAR = 15_000;
+    const INTERVAL_COMPLETE = 5_000;
+    const MAX_COMPLETE = 90_000;
+
+    // Phase 1: wait for checks to appear
+    const appearStart = Date.now();
+    let checks: CiCheck[] = [];
+    while (Date.now() - appearStart < MAX_APPEAR) {
+      if (signal.aborted) break;
+      checks = await fetchChecks(mrNumber, cwd);
+      if (checks.length > 0) break;
+      onUpdate?.({ content: [{ type: "text", text: "Waiting for CI checks to appear..." }] });
+      await sleep(INTERVAL_APPEAR);
+    }
+
+    if (checks.length === 0) {
+      const report = buildReport({ number: mrNumber, url: "", title: "", base: "", head: "", draft: false }, checks);
+      const msg = `No CI checks found for MR !${mrNumber} after ${Math.round(MAX_APPEAR / 1000)}s. The workflow may not have started yet.`;
+      onUpdate?.({ content: [{ type: "text", text: msg }] });
+      return { report, timedOut: true };
+    }
+
+    onUpdate?.({
+      content: [{ type: "text", text: `${checks.length} CI check(s) found. Waiting for completion...` }],
+    });
+
+    // Phase 2: wait for all checks to complete
+    const completeStart = Date.now();
+    let prevCounts = "";
+    while (Date.now() - completeStart < MAX_COMPLETE) {
+      if (signal.aborted) break;
+      checks = await fetchChecks(mrNumber, cwd);
+      const pending = checks.filter((c) => c.bucket === "pending" || c.bucket === "").length;
+      const done = checks.length > 0 && pending === 0;
+
+      // Show progress when counts change
+      const passed = checks.filter((c) => c.bucket === "pass").length;
+      const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel").length;
+      const counts = `${passed}p ${failed}f ${pending}…`;
+      if (counts !== prevCounts) {
+        prevCounts = counts;
+        onUpdate?.({ content: [{ type: "text", text: `CI checks: ${counts} (${checks.length} total)` }] });
+      }
+
+      if (done) break;
+      await sleep(INTERVAL_COMPLETE);
+    }
+
+    const report = buildReport({ number: mrNumber, url: "", title: "", base: "", head: "", draft: false }, checks);
+    const timedOut = checks.some((c) => c.bucket === "pending" || c.bucket === "");
+
+    if (!timedOut) {
+      const verdict = report.verdict;
+      const icon = verdict === "PASSED" ? "✅" : verdict === "FAILED" ? "❌" : "";
+      onUpdate?.({
+        content: [
+          { type: "text", text: `${icon} CI ${verdict} — ${report.passed}p ${report.failed}f ${report.skipped}s` },
+        ],
+      });
+    }
+
+    return { report, timedOut };
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   pi.registerTool({
     name: "check_ci",
     label: "Check CI",
     description:
-      "Fetch the current CI check status for a GitHub MR. Use when the user asks about CI status, or when the MR was created earlier and results haven't been reported yet.",
+      "Fetch the current CI check status for a GitHub MR. Polls and waits for checks to appear, then waits for them to complete (up to ~90s). Use when the user asks about CI status, or when the MR was created earlier and results haven't been reported yet.",
     promptSnippet: "Fetch CI check status for a GitHub MR",
     promptGuidelines: [
       "Use check_ci when the user asks about CI/checks status for a specific MR number, or wants to know if checks have passed.",
@@ -406,22 +492,28 @@ export default function (pi: ExtensionAPI) {
         description: "The MR/PR number to check CI status for.",
       }),
     }),
-    async execute(_id, params, _signal, onUpdate, ctx) {
-      onUpdate?.({ content: [{ type: "text", text: "Fetching CI checks..." }] });
+    async execute(_id, params, signal, onUpdate, ctx) {
+      let url = "";
       try {
-        const checks = await fetchChecks(params.mrNumber, ctx.cwd);
-        let url = "";
-        try {
-          const { stdout } = await gh(["pr", "view", String(params.mrNumber), "--json", "url"], ctx.cwd);
-          url = (JSON.parse(stdout) as { url: string }).url ?? "";
-        } catch {
-          /* ok */
-        }
-        const report = buildReport(
-          { number: params.mrNumber, url, title: "", base: "", head: "", draft: false },
-          checks,
-        );
-        return { content: [{ type: "text", text: formatJson(report) }], details: report };
+        const { stdout } = await gh(["pr", "view", String(params.mrNumber), "--json", "url"], ctx.cwd);
+        url = (JSON.parse(stdout) as { url: string }).url ?? "";
+      } catch {
+        /* ok */
+      }
+
+      onUpdate?.({ content: [{ type: "text", text: `Fetching CI status for MR !${params.mrNumber}...` }] });
+
+      try {
+        const { report, timedOut } = await pollCiForResult(params.mrNumber, ctx.cwd, signal, onUpdate);
+
+        // Stitch in the URL we fetched earlier
+        if (url) report.mrUrl = url;
+
+        const prefix = timedOut ? "⏰ Timed out waiting for CI. Latest status:\n\n" : "";
+        return {
+          content: [{ type: "text", text: prefix + formatJson(report) }],
+          details: { ...report, timedOut },
+        };
       } catch (e: any) {
         return {
           content: [{ type: "text", text: `Failed: ${e.message}` }],
