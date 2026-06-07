@@ -1,0 +1,11 @@
+{
+  "name": "@johan-stph/pi-extensions",
+  "version": "1.0.0",
+  "description": "Personal pi coding agent extensions",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./create-mr/index.ts"
+    ]
+  }
+}
