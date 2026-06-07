@@ -100,7 +100,7 @@ async function createMr(cwd: string, description: string, base?: string, draft?:
   args.push("--head", head);
 
   // Ensure branch is pushed so gh pr create can find it
-  const { code: pushCode, stderr: pushErr } = await gh(["push", "--set-upstream", "origin", head], cwd);
+  const { code: pushCode, stderr: pushErr } = await git(["push", "--set-upstream", "origin", head], cwd);
   if (pushCode !== 0) {
     throw new Error(`Failed to push branch "${head}" to origin: ${pushErr || "unknown error"}`);
   }
