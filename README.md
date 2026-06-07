@@ -2,6 +2,8 @@
 
 Personal pi coding agent extensions.
 
+> **Last tested:** 2026-06-07 — workflow validated ✅
+
 ## Extensions
 
 ### start-work
