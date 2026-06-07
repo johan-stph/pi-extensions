@@ -2,6 +2,8 @@
 
 Personal pi coding agent extensions.
 
+> **Note:** This repo is under active development. Test MR created for extension validation.
+
 ## Extensions
 
 ### start-work
