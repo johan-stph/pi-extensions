@@ -15,7 +15,8 @@
   "pi": {
     "extensions": [
       "./create-mr/index.ts",
-      "./start-work/index.ts"
+      "./start-work/index.ts",
+      "./new-work-check/index.ts"
     ]
   },
   "dependencies": {
