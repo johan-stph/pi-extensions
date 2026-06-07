@@ -24,10 +24,12 @@ function gh(args: string[], cwd: string): Promise<{ stdout: string; stderr: stri
     const child = spawn("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", () => resolve({ stdout: "", stderr: "gh not found", code: 1 }));
-    child.on("close", (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 }));
+    child.on("close", (code: number | null) =>
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 }),
+    );
   });
 }
 
@@ -56,12 +58,7 @@ interface MrInfo {
  * Create a PR via `gh pr create` (no --json support on older gh).
  * We pass --title and --body and parse the URL from stdout.
  */
-async function createMr(
-  cwd: string,
-  description: string,
-  base?: string,
-  draft?: boolean,
-): Promise<MrInfo> {
+async function createMr(cwd: string, description: string, base?: string, draft?: boolean): Promise<MrInfo> {
   const args = ["pr", "create"];
 
   const nl = description.indexOf("\n");
@@ -90,7 +87,11 @@ async function createMr(
     cwd,
   );
   let view: Record<string, unknown> = {};
-  try { view = JSON.parse(viewOut); } catch { /* keep defaults */ }
+  try {
+    view = JSON.parse(viewOut);
+  } catch {
+    /* keep defaults */
+  }
 
   return {
     number,
@@ -131,11 +132,21 @@ interface CiReport {
 
 async function fetchChecks(mrNumber: number, cwd: string): Promise<CiCheck[]> {
   const { stdout, code } = await gh(
-    ["pr", "checks", String(mrNumber), "--json", "name,bucket,state,link,completedAt,startedAt,workflow,event,description"],
+    [
+      "pr",
+      "checks",
+      String(mrNumber),
+      "--json",
+      "name,bucket,state,link,completedAt,startedAt,workflow,event,description",
+    ],
     cwd,
   );
   if (code !== 0 || !stdout) return [];
-  try { return JSON.parse(stdout) as CiCheck[]; } catch { return []; }
+  try {
+    return JSON.parse(stdout) as CiCheck[];
+  } catch {
+    return [];
+  }
 }
 
 function buildReport(mr: MrInfo, checks: CiCheck[]): CiReport {
@@ -167,44 +178,58 @@ function buildReport(mr: MrInfo, checks: CiCheck[]): CiReport {
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 function formatMd(report: CiReport): string {
-  const icon = report.verdict === "PASSED" ? "✅" : report.verdict === "FAILED" ? "❌" : report.verdict === "PENDING" ? "🔄" : "🔵";
+  const icon =
+    report.verdict === "PASSED"
+      ? "✅"
+      : report.verdict === "FAILED"
+        ? "❌"
+        : report.verdict === "PENDING"
+          ? "🔄"
+          : "🔵";
   let md = `## ${icon} CI — [MR !${report.mrNumber}](${report.mrUrl})\n\n`;
   md += `**Verdict:** ${report.verdict}  \n`;
   md += `**Checks:** ${report.passed} passed, ${report.failed} failed, ${report.pending} pending, ${report.skipped} skipped (${report.total} total)\n\n`;
   md += `| Check | State | Bucket |\n|---|---|---|\n`;
   for (const c of report.checks) {
-    const bi = c.bucket === "pass" ? "✅" : c.bucket === "fail" ? "❌" : c.bucket === "pending" ? "⏳" : c.bucket === "skipping" ? "⏭️" : "⚪";
+    const bi =
+      c.bucket === "pass"
+        ? "✅"
+        : c.bucket === "fail"
+          ? "❌"
+          : c.bucket === "pending"
+            ? "⏳"
+            : c.bucket === "skipping"
+              ? "⏭️"
+              : "⚪";
     md += `| ${bi} ${c.name} | ${c.state} | ${c.bucket || "—"} |\n`;
   }
   return md;
 }
 
 function formatJson(report: CiReport): string {
-  return JSON.stringify({
-    verdict: report.verdict,
-    passed: report.passed,
-    failed: report.failed,
-    pending: report.pending,
-    skipped: report.skipped,
-    url: report.mrUrl,
-    checks: report.checks.map((c) => ({
-      name: c.name,
-      state: c.state,
-      bucket: c.bucket,
-      link: c.link,
-    })),
-  }, null, 2);
+  return JSON.stringify(
+    {
+      verdict: report.verdict,
+      passed: report.passed,
+      failed: report.failed,
+      pending: report.pending,
+      skipped: report.skipped,
+      url: report.mrUrl,
+      checks: report.checks.map((c) => ({
+        name: c.name,
+        state: c.state,
+        bucket: c.bucket,
+        link: c.link,
+      })),
+    },
+    null,
+    2,
+  );
 }
 
 // ── Background polling ─────────────────────────────────────────────────────
 
-function startCiPolling(
-  pi: ExtensionAPI,
-  mr: MrInfo,
-  cwd: string,
-  intervalMs = 30_000,
-  maxPolls = 120,
-) {
+function startCiPolling(pi: ExtensionAPI, mr: MrInfo, cwd: string, intervalMs = 30_000, maxPolls = 120) {
   let polls = 0;
 
   const poll = async () => {
@@ -219,7 +244,7 @@ function startCiPolling(
         const report = buildReport(mr, checks);
         let msg = formatMd(report);
         if (!done && polls >= maxPolls) {
-          msg = `⏰ CI polling timed out after ${Math.round(intervalMs * polls / 60_000)}m.\n\n${msg}`;
+          msg = `⏰ CI polling timed out after ${Math.round((intervalMs * polls) / 60_000)}m.\n\n${msg}`;
         }
         pi.sendUserMessage(msg, { deliverAs: "followUp", triggerTurn: true });
         return;
@@ -236,7 +261,6 @@ function startCiPolling(
 // ── Extension ──────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-
   // ── /create-mr command ──────────────────────────────────────────────────
 
   pi.registerCommand("create-mr", {
@@ -254,7 +278,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       const err = await preflight(ctx.cwd);
-      if (err) { ctx.ui.notify(err, "error"); return; }
+      if (err) {
+        ctx.ui.notify(err, "error");
+        return;
+      }
 
       try {
         const mr = await createMr(ctx.cwd, description, base, draft);
@@ -277,22 +304,29 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "create_mr",
     label: "Create MR",
-    description: "Create a GitHub merge request for the current branch, then poll CI checks in the background and report results. Use when the user asks to create an MR/PR.",
+    description:
+      "Create a GitHub merge request for the current branch, then poll CI checks in the background and report results. Use when the user asks to create an MR/PR.",
     promptSnippet: "Create a GitHub MR/PR for the current branch",
     promptGuidelines: [
       "Use create_mr when the user wants to open a pull request or merge request. Provide a clear, descriptive title and body describing all changes made.",
     ],
     parameters: Type.Object({
       description: Type.String({
-        description: "MR title and description. First line becomes the title, remaining lines (if any) become the body.",
+        description:
+          "MR title and description. First line becomes the title, remaining lines (if any) become the body.",
       }),
-      base: Type.Optional(Type.String({
-        description: "Target/base branch for the MR. Defaults to the repository default branch (usually main/master).",
-      })),
-      draft: Type.Optional(Type.Boolean({
-        description: "Create as draft MR. Defaults to false.",
-        default: false,
-      })),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "Target/base branch for the MR. Defaults to the repository default branch (usually main/master).",
+        }),
+      ),
+      draft: Type.Optional(
+        Type.Boolean({
+          description: "Create as draft MR. Defaults to false.",
+          default: false,
+        }),
+      ),
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
       const err = await preflight(ctx.cwd);
@@ -304,17 +338,30 @@ export default function (pi: ExtensionAPI) {
         const mr = await createMr(ctx.cwd, params.description, params.base, params.draft);
 
         let initialChecks: CiCheck[] = [];
-        try { initialChecks = await fetchChecks(mr.number, ctx.cwd); } catch { /* ok */ }
+        try {
+          initialChecks = await fetchChecks(mr.number, ctx.cwd);
+        } catch {
+          /* ok */
+        }
 
         startCiPolling(pi, mr, ctx.cwd);
         const report = buildReport(mr, initialChecks);
 
         return {
-          content: [{ type: "text", text: `MR !${mr.number}: ${mr.url}\n\nCI polling started in background. Results reported when complete.\n\n${formatJson(report)}` }],
+          content: [
+            {
+              type: "text",
+              text: `MR !${mr.number}: ${mr.url}\n\nCI polling started in background. Results reported when complete.\n\n${formatJson(report)}`,
+            },
+          ],
           details: { mr, ciPollingStarted: true, initialReport: report },
         };
       } catch (e: any) {
-        return { content: [{ type: "text", text: `Failed: ${e.message}` }], details: { error: e.message }, isError: true };
+        return {
+          content: [{ type: "text", text: `Failed: ${e.message}` }],
+          details: { error: e.message },
+          isError: true,
+        };
       }
     },
   });
@@ -324,7 +371,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "check_ci",
     label: "Check CI",
-    description: "Fetch the current CI check status for a GitHub MR. Use when the user asks about CI status, or when the MR was created earlier and results haven't been reported yet.",
+    description:
+      "Fetch the current CI check status for a GitHub MR. Use when the user asks about CI status, or when the MR was created earlier and results haven't been reported yet.",
     promptSnippet: "Fetch CI check status for a GitHub MR",
     promptGuidelines: [
       "Use check_ci when the user asks about CI/checks status for a specific MR number, or wants to know if checks have passed.",
@@ -342,11 +390,20 @@ export default function (pi: ExtensionAPI) {
         try {
           const { stdout } = await gh(["pr", "view", String(params.mrNumber), "--json", "url"], ctx.cwd);
           url = (JSON.parse(stdout) as { url: string }).url ?? "";
-        } catch { /* ok */ }
-        const report = buildReport({ number: params.mrNumber, url, title: "", base: "", head: "", draft: false }, checks);
+        } catch {
+          /* ok */
+        }
+        const report = buildReport(
+          { number: params.mrNumber, url, title: "", base: "", head: "", draft: false },
+          checks,
+        );
         return { content: [{ type: "text", text: formatJson(report) }], details: report };
       } catch (e: any) {
-        return { content: [{ type: "text", text: `Failed: ${e.message}` }], details: { error: e.message }, isError: true };
+        return {
+          content: [{ type: "text", text: `Failed: ${e.message}` }],
+          details: { error: e.message },
+          isError: true,
+        };
       }
     },
   });

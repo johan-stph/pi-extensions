@@ -24,10 +24,12 @@ function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: str
     const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", () => resolve({ stdout: "", stderr: "git not found", code: 1 }));
-    child.on("close", (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 }));
+    child.on("close", (code: number | null) =>
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 }),
+    );
   });
 }
 
@@ -93,7 +95,9 @@ async function startWork(
   );
   if (addCode !== 0) {
     if (addErr?.includes("already exists") || addErr?.includes("already checked out")) {
-      throw new Error(`Worktree "${name}" already exists at ${worktreePath}. Remove it first with: git worktree remove ${worktreePath}`);
+      throw new Error(
+        `Worktree "${name}" already exists at ${worktreePath}. Remove it first with: git worktree remove ${worktreePath}`,
+      );
     }
     throw new Error(`git worktree add failed: ${addErr || "unknown error"}`);
   }
@@ -109,7 +113,6 @@ async function startWork(
 // ── Extension ──────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-
   // ── /start-work command ─────────────────────────────────────────────────
 
   pi.registerCommand("start-work", {
@@ -123,7 +126,10 @@ export default function (pi: ExtensionAPI) {
 
       // Validate name: no spaces, no special chars
       if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
-        ctx.ui.notify("Worktree name must start with alphanumeric and contain only alphanumeric, dots, hyphens, underscores.", "error");
+        ctx.ui.notify(
+          "Worktree name must start with alphanumeric and contain only alphanumeric, dots, hyphens, underscores.",
+          "error",
+        );
         return;
       }
 
@@ -169,7 +175,12 @@ export default function (pi: ExtensionAPI) {
       // Validate name
       if (!params.name || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(params.name)) {
         return {
-          content: [{ type: "text", text: "Error: name must start with alphanumeric and contain only alphanumeric, dots, hyphens, underscores." }],
+          content: [
+            {
+              type: "text",
+              text: "Error: name must start with alphanumeric and contain only alphanumeric, dots, hyphens, underscores.",
+            },
+          ],
           details: { error: "invalid name" },
           isError: true,
         };
