@@ -353,6 +353,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Create a GitHub MR/PR for the current branch",
     promptGuidelines: [
       "Use create_mr when the user wants to open a pull request or merge request. Provide a clear, descriptive title and body describing all changes made.",
+      "Pass the worktree path (from start_work response) as workingDir so the tool runs git commands from the correct directory.",
     ],
     parameters: Type.Object({
       description: Type.String({
@@ -371,21 +372,28 @@ export default function (pi: ExtensionAPI) {
           default: false,
         }),
       ),
+      workingDir: Type.Optional(
+        Type.String({
+          description:
+            "Working directory for git operations. Pass the worktree path from start_work. Defaults to ctx.cwd.",
+        }),
+      ),
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
-      const err = await preflight(ctx.cwd);
+      const cwd = params.workingDir ?? ctx.cwd;
+      const err = await preflight(cwd);
       if (err) return { content: [{ type: "text", text: `Error: ${err}` }], details: { error: err } };
 
       onUpdate?.({ content: [{ type: "text", text: "Creating MR..." }] });
 
       try {
-        const mr = await createMr(ctx.cwd, params.description, params.base, params.draft);
+        const mr = await createMr(cwd, params.description, params.base, params.draft);
 
         // Quick poll: wait up to 10s for the first CI check to appear
         let initialChecks: CiCheck[] = [];
         for (let i = 0; i < 4; i++) {
           try {
-            initialChecks = await fetchChecks(mr.number, ctx.cwd);
+            initialChecks = await fetchChecks(mr.number, cwd);
             if (initialChecks.length > 0) break;
           } catch {
             /* ok */
@@ -393,7 +401,7 @@ export default function (pi: ExtensionAPI) {
           if (i < 3) await sleep(2_500);
         }
 
-        startCiPolling(pi, mr, ctx.cwd);
+        startCiPolling(pi, mr, cwd);
         const report = buildReport(mr, initialChecks);
 
         return {
